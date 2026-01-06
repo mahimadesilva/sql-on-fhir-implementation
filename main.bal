@@ -29,8 +29,40 @@ public function rowProduct(json[][] parts) returns json[]|error {
 public function normalize(json def) returns json|error {
     map<anydata> normalizedDef = check def.cloneWithType();
     if (normalizedDef.hasKey("forEach")) {
+            normalizedDef["type"] = "forEach";
+        }
+        else {
+            normalizedDef["type"] = "forEachOrNull";
+        }
+
+        // Move unionAll to select if it exists
+        if (normalizedDef.hasKey("unionAll")) {
+            json[] selectArray = check normalizedDef["select"].cloneWithType();
+            json[] newSelect = [{"unionAll": normalizedDef["unionAll"]}.toJson()];
+            newSelect.push(...selectArray);
+            normalizedDef["select"] = newSelect;
+            _ = normalizedDef.remove("unionAll");
+        }
+
+        // Move column to select if it exists
+        if (normalizedDef.hasKey("column")) {
+            json[] selectArray = check normalizedDef["select"].cloneWithType();
+            json[] newSelect = [{"column": normalizedDef["column"]}.toJson()];
+            newSelect.push(...selectArray);
+            normalizedDef["select"] = newSelect;
+            _ = normalizedDef.remove("column");
+        }
+
+        // Recursively normalize each item in select
+        json[] selects = check normalizedDef["select"].cloneWithType();
+        json[] normalizedSelects = [];
+        foreach var s in selects {
+            normalizedSelects.push(check normalize(s));
+        }
+        normalizedDef["select"] = normalizedSelects;
         return normalizedDef.toJson();
-    } else if (normalizedDef.hasKey("select")) {
+    }
+    else if (normalizedDef.hasKey("select")) {
         normalizedDef["type"] = "select";
         json[] selects = check normalizedDef["select"].cloneWithType();
         json[] normalizedSelects = [];
@@ -39,7 +71,8 @@ public function normalize(json def) returns json|error {
         }
         normalizedDef["select"] = normalizedSelects;
         return normalizedDef.toJson();
-    } else {
+    }
+    else {
         if (normalizedDef.hasKey("column")) {
             normalizedDef["type"] = "column";
         }
