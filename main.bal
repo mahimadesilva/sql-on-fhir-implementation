@@ -28,6 +28,13 @@ public function rowProduct(json[][] parts) returns json[]|error {
 
 public function normalize(json def) returns json|error {
     map<anydata> normalizedDef = check def.cloneWithType();
+
+    if (normalizedDef.hasKey("forEach") || normalizedDef.hasKey("forEachOrNull")) {
+        // Initialize select array if it doesn't exist
+        if (!normalizedDef.hasKey("select")) {
+            normalizedDef["select"] = [];
+        }
+
     if (normalizedDef.hasKey("forEach")) {
             normalizedDef["type"] = "forEach";
         }
@@ -133,6 +140,63 @@ public function selectOperation(json selectExpression, json node) returns json[]
     return rowProduct(evalResult);
 }
 
+public function forEachOperation(json selectExpression, json node) returns json[]|error {
+    map<anydata> expression = <map<anydata>>selectExpression;
+
+    // Assert forEach is required
+    if (!expression.hasKey("forEach")) {
+        return error("forEach required");
+    }
+
+    string forEachPath = <string>expression["forEach"];
+
+    // Evaluate FHIRPath expression to get nodes
+    json[] nodes = check fhirpath:getValuesFromFhirPath(node, forEachPath);
+
+    json[] results = [];
+
+    // For each node, apply the select operation
+    foreach json nodeItem in nodes {
+        if (expression.hasKey("select")) {
+            json selectExpr = {"select": expression["select"]}.toJson();
+            json[] selectResults = check selectOperation(selectExpr, nodeItem);
+            results.push(...selectResults);
+        }
+    }
+
+    return results;
+}
+
+public function forEachOrNullOperation(json selectExpression, json node) returns json[]|error {
+    map<anydata> expression = <map<anydata>>selectExpression;
+
+    // Assert forEach is required
+    if (!expression.hasKey("forEachOrNull")) {
+        return error("forEachOrNull required");
+    }
+
+    string forEachOrNullPath = <string>expression["forEachOrNull"];
+
+    // Evaluate FHIRPath expression to get nodes
+    json[] nodes = check fhirpath:getValuesFromFhirPath(node, forEachOrNullPath);
+    if nodes.length() == 0 {
+        nodes = [{}];
+    }
+
+    json[] results = [];
+
+    // For each node, apply the select operation
+    foreach json nodeItem in nodes {
+        if (expression.hasKey("select")) {
+            json selectExpr = {"select": expression["select"]}.toJson();
+            json[] selectResults = check selectOperation(selectExpr, nodeItem);
+            results.push(...selectResults);
+        }
+    }
+
+    return results;
+}
+
 public function doEval(json selectExpression, json node) returns json[]|error {
 
     match check selectExpression.'type {
@@ -143,6 +207,14 @@ public function doEval(json selectExpression, json node) returns json[]|error {
         "select" =>
         {
             return selectOperation(selectExpression, node);
+        }
+        "forEach" =>
+        {
+            return forEachOperation(selectExpression, node);
+        }
+        "forEachOrNull" =>
+        {
+            return forEachOrNullOperation(selectExpression, node);
         }
         _ =>
         {
