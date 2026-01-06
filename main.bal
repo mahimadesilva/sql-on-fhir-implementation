@@ -97,10 +97,12 @@ public function columnOperation(json selectExpression, json node) returns json[]
         json[] vs = check fhirpath:getValuesFromFhirPath(node, <string>c["path"]);
         string recordKey = c.hasKey("name") && (c["name"] is string) ? <string>c["name"] : <string>c["path"];
 
-        if (c.hasKey("collection") && (c["collection"] is boolean) && <boolean>c["collection"]) {
+        if c.hasKey("collection") && c["collection"] is boolean && <boolean>c["collection"] {
             result[recordKey] = vs;
-        } else if (vs.length() > 0) {
+        } else if vs.length() === 1 {
             result[recordKey] = vs[0];
+        } else if vs.length() === 0 {
+            result[recordKey] = ();
         }
         else {
             return error("Collection flag is false for path: " + <string>c["path"]);
