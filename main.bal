@@ -26,6 +26,15 @@ public function rowProduct(json[][] parts) returns json[]|error {
     return result;
 }
 
+// Helper function to recursively normalize select array items
+function normalizeArrayItems(json[] selects) returns json[]|error {
+    json[] normalizedItems = [];
+    foreach var s in selects {
+        normalizedItems.push(check normalize(s));
+    }
+    return normalizedItems;
+}
+
 public function normalize(json def) returns json|error {
     map<anydata> normalizedDef = check def.cloneWithType();
 
@@ -62,25 +71,69 @@ public function normalize(json def) returns json|error {
 
         // Recursively normalize each item in select
         json[] selects = check normalizedDef["select"].cloneWithType();
-        json[] normalizedSelects = [];
-        foreach var s in selects {
-            normalizedSelects.push(check normalize(s));
-        }
-        normalizedDef["select"] = normalizedSelects;
+        normalizedDef["select"] = check normalizeArrayItems(selects);
         return normalizedDef.toJson();
-    }
-    else if (normalizedDef.hasKey("select")) {
+    } else if normalizedDef.hasKey("select") && normalizedDef.hasKey("column") && normalizedDef.hasKey("unionAll") {
+        // Normalize to select type
         normalizedDef["type"] = "select";
         json[] selects = check normalizedDef["select"].cloneWithType();
-        json[] normalizedSelects = [];
-        foreach var s in selects {
-            normalizedSelects.push(check normalize(s));
-        }
-        normalizedDef["select"] = normalizedSelects;
+        json[] newSelects = [];
+        newSelects.push({"column": normalizedDef["column"]}.toJson());
+        newSelects.push({"unionAll": normalizedDef["unionAll"]}.toJson());
+        newSelects.push(...selects);
+        normalizedDef["select"] = newSelects;
+        _ = normalizedDef.remove("column");
+        _ = normalizedDef.remove("unionAll");
+
+        // Recursively normalize each item in select
+        normalizedDef["select"] = check normalizeArrayItems(newSelects);
         return normalizedDef.toJson();
+    } else if normalizedDef.hasKey("select") && normalizedDef.hasKey("unionAll") {
+        normalizedDef["type"] = "select";
+        json[] selects = check normalizedDef["select"].cloneWithType();
+        json[] newSelects = [];
+        newSelects.push({"unionAll": normalizedDef["unionAll"]}.toJson());
+        newSelects.push(...selects);
+        normalizedDef["select"] = newSelects;
+        _ = normalizedDef.remove("unionAll");
+
+        // Recursively normalize each item in select
+        normalizedDef["select"] = check normalizeArrayItems(newSelects);
+        return normalizedDef.toJson();
+    } else if normalizedDef.hasKey("select") && normalizedDef.hasKey("column") {
+        normalizedDef["type"] = "select";
+        json[] selects = check normalizedDef["select"].cloneWithType();
+        json[] newSelects = [];
+        newSelects.push({"column": normalizedDef["column"]}.toJson());
+        newSelects.push(...selects);
+        normalizedDef["select"] = newSelects;
+        _ = normalizedDef.remove("column");
+        // Recursively normalize each item in select
+        normalizedDef["select"] = check normalizeArrayItems(newSelects);
+        return normalizedDef.toJson();
+    } else if normalizedDef.hasKey("column") && normalizedDef.hasKey("unionAll") {
+        normalizedDef["type"] = "select";
+        json[] newSelects = [];
+        newSelects.push({"column": normalizedDef["column"]}.toJson());
+        newSelects.push({"unionAll": normalizedDef["unionAll"]}.toJson());
+        normalizedDef["select"] = newSelects;
+        _ = normalizedDef.remove("column");
+        _ = normalizedDef.remove("unionAll");
+        // Recursively normalize each item in select
+        normalizedDef["select"] = check normalizeArrayItems(newSelects);
+        return normalizedDef.toJson();
+    } else if (normalizedDef.hasKey("select")) {
+        normalizedDef["type"] = "select";
+        json[] selects = check normalizedDef["select"].cloneWithType();
+        normalizedDef["select"] = check normalizeArrayItems(selects);
+        return normalizedDef.toJson();
+    } else {
+        if (normalizedDef.hasKey("unionAll")) {
+            normalizedDef["type"] = "unionAll";
+            json[] unionAlls = check normalizedDef["unionAll"].cloneWithType();
+            normalizedDef["unionAll"] = check normalizeArrayItems(unionAlls);
     }
-    else {
-        if (normalizedDef.hasKey("column")) {
+        else if (normalizedDef.hasKey("column")) {
             normalizedDef["type"] = "column";
         }
         return normalizedDef.toJson();
@@ -197,6 +250,47 @@ public function forEachOrNullOperation(json selectExpression, json node) returns
     return results;
 }
 
+// Helper function to check if all results have the same columns
+function arraysUnique(json[] results) returns int {
+    map<boolean> uniqueColumnSets = {};
+
+    foreach var item in results {
+        if item is map<anydata> {
+            // Sort keys and create a string representation
+            string columnSet = item.keys().sort().toString();
+            uniqueColumnSets[columnSet] = true;
+        }
+    }
+
+    return uniqueColumnSets.length();
+}
+
+public function unionAllOperation(json selectExpression, json node) returns json[]|error {
+    map<anydata> expression = <map<anydata>>selectExpression;
+
+    // Assert unionAll exists
+    if (!expression.hasKey("unionAll")) {
+        return error("unionAll is required");
+    }
+
+    // FlatMap: evaluate each unionAll element and flatten the results
+    json[] result = [];
+    foreach var d in <json[]>expression["unionAll"] {
+        json[] partialResult = check doEval(d, node);
+        result.push(...partialResult);
+    }
+
+    // TODO: ideally, this should be done during the validation
+    // Validate that all results have the same columns
+    int uniqueCount = arraysUnique(result);
+
+    if uniqueCount > 1 {
+        return error(string `Union columns mismatch: found ${uniqueCount} different column sets`);
+    }
+
+    return result;
+}
+
 public function doEval(json selectExpression, json node) returns json[]|error {
 
     match check selectExpression.'type {
@@ -215,6 +309,10 @@ public function doEval(json selectExpression, json node) returns json[]|error {
         "forEachOrNull" =>
         {
             return forEachOrNullOperation(selectExpression, node);
+        }
+        "unionAll" =>
+        {
+            return unionAllOperation(selectExpression, node);
         }
         _ =>
         {
